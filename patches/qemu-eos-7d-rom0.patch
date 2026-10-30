@@ -1,0 +1,12 @@
+diff --git a/hw/eos/model_list.c b/hw/eos/model_list.c
+index 9e6c048b3c..84222fa9fe 100644
+--- a/hw/eos/model_list.c
++++ b/hw/eos/model_list.c
+@@ -185,6 +185,7 @@ struct eos_model_desc eos_model_list[] = {
+     {
+         .name                   = MODEL_NAME_7D,
+         .digic_version          = 4,
++        .rom0_size              = 0x01000000,   /* 16MB, readable on the real 7D (slave) */
+         .ram_size               = 0x20000000,   /* 512MB */
+         .card_led_address       = 0xC022D06C,
+         .current_task_addr      = 0x1A1C,

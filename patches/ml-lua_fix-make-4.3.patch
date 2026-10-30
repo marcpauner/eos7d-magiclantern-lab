@@ -1,0 +1,12 @@
+diff -r 7e5067c0a8cf Makefile.top
+--- a/Makefile.top	Mon Dec 28 10:17:57 2020 +0100
++++ b/Makefile.top	Fri Oct 30 17:27:38 2026 +0100
+@@ -45,7 +45,7 @@
+ INSTALL_ALL_SCRIPTS = \
+ 	$(call build,SCRIPTS,\
+ 		for f in $(shell find $(SCRIPT_DIR) -type f -name *.lua); do \
+-			dst=$(INSTALL_SCRIPTS_DIR)/$${f\#\#$(SCRIPT_DIR)/}; \
++			dst=$(INSTALL_SCRIPTS_DIR)/$${f##$(SCRIPT_DIR)/}; \
+ 			dstdir=`dirname $$dst`; \
+ 			$(MKDIR) -p $$dstdir; \
+ 			$(CP) $$f $$dst; \

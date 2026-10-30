@@ -1,0 +1,17 @@
+# build output
+build/
+*.o
+*.d
+*.mo
+*.sym
+__pycache__/
+
+# personal photos and test outputs
+samples/
+
+# Canon code: never commit firmware or ROM dumps
+*.FIR
+*.fir
+*.BIN
+*.bin
+roms/
