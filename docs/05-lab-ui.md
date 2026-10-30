@@ -1,11 +1,18 @@
 # 5. Lab UI: a redesigned menu for the 7D
 
-`labui.mo` replaces what the Trash button shows with a redesigned menu:
-**Ajustes** (categories), **Superposiciones** (overlays) and **Zebras**,
-with anti-aliased type, LED-style indicators, an inverted focus row and
-graduated rulers. Anything not redesigned yet opens in the classic menu.
-Design: `ui-design/` mockups (Space Grotesk + JetBrains Mono, neutrals and
-one lime accent).
+`labui.mo` replaces what the Trash button shows with a redesigned menu, with
+anti-aliased type, LED-style indicators, an inverted focus row and graduated
+rulers. Design: `ui-design/` mockups (Space Grotesk + JetBrains Mono,
+neutrals and one lime accent).
+
+* **Ajustes**: every top-level Magic Lantern menu found on the camera, in
+  the design's sections and with Spanish names; menus added by modules
+  (e.g. Soup Engine's *Film*) show up on their own.
+* **Superposiciones** and **Zebras**: hand-designed screens.
+* **Every other menu and submenu**: a generic screen drawn from ML's own
+  menu entries (values, ON/OFF as LED chips, submenus, help and warnings).
+  Actions (dumps, games, scripts...) are handed to the classic menu, since
+  some of them take the screen over themselves.
 
 ## How it runs on the camera
 
@@ -21,9 +28,18 @@ one lime accent).
   uses. Submenus are menus named after their parent entry, so
   `("Zebras", "Overexposure")` works. None of the entries used here has a
   custom `.select`, so values are set directly.
-* **Classic menu.** Q, or a category that is not redesigned, leaves ML's own
-  menu on screen (`select_menu_by_name`, then `menu_redraw`). *Prefs > Lab
-  UI* turns the module's takeover off.
+* **All menus.** ML's list of menus is private to `menu.c`, but
+  `struct menu` / `struct menu_entry` are public in `menu.h`, and
+  `menu_add` links the module's own *Prefs > Lab UI* entry into that list:
+  its `parent_menu` and the menus' `next`/`prev` pointers reach every menu.
+  Rows follow `menu.c`'s rules: `is_visible` (hidden, shidden, advanced),
+  `entry_default_display_info` + the entry's `update` for the texts,
+  `entry_guess_enabled` for ON/OFF, and `menu_entry_select` for changes
+  (`select(priv, ±1)`, else `menu_numeric_toggle`). Submenus are the
+  `parent_menu` of their first child.
+* **Classic menu.** Q, actions and *Menú clásico* leave ML's own menu on
+  screen at that entry (`select_menu_by_name`, then `menu_redraw`). *Prefs >
+  Lab UI* turns the module's takeover off.
 
 ## Display facts this relies on
 
@@ -52,9 +68,9 @@ Freestanding C99, no floating point. Loaded size about 348 KB (14 KB code,
 ## Tests
 
 * `ui/sim/run.sh` builds the same code for the PC with AddressSanitizer and
-  UBSan, runs 18 behaviour checks against a fake settings store that keeps
-  ML's ranges, and renders every screen to PNG (`ui/sim/out/*_lcd.png` is the
-  4:3 view).
+  UBSan, runs 32 behaviour checks against fake settings (ML's ranges) and
+  fake menus (values, toggles, submenus, actions, warnings, a module menu),
+  and renders every screen to PNG (`ui/sim/out/*_lcd.png` is the 4:3 view).
 * `ui/build.sh` builds `labui.mo` in the ML tree and checks every symbol it
   needs against the official `7D_203.sym`.
 
@@ -63,6 +79,7 @@ first place the module really runs.
 
 ## Status
 
-Built and simulated. Not yet run on the camera: the palette format was
-fitted from the bootloader palette and has to be confirmed there, and the
-redraw speed is unmeasured.
+* 2026-10-30, first version (Ajustes, Superposiciones, Zebras): runs on the
+  camera, colours as designed.
+* Generic screens for every menu: built and simulated, camera test pending.
+  Entry names, values and help come from Magic Lantern and stay in English.

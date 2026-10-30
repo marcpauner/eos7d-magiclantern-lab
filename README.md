@@ -17,7 +17,7 @@ Magic Lantern module.
 | Magic Lantern on the camera | official `lua_fix` build installed, Canon firmware 2.0.3 |
 | QEMU (qemu-eos) | boots the 7D slave and ML's boot hack, stops before the GUI (master CPU not emulated) |
 | `soup.mo` film looks | runs on the camera, output byte-identical to the desktop build; playback issue open |
-| `labui.mo` redesigned menu | built and tested in the PC simulator; first camera test pending |
+| `labui.mo` redesigned menu | runs on the camera; now covers every ML menu (generic screens: camera test pending) |
 
 ## What's here
 

@@ -50,6 +50,11 @@ extern const lab_icon LAB_I_DISPLAY;
 extern const lab_icon LAB_I_MODULES;
 extern const lab_icon LAB_I_PREFS;
 extern const lab_icon LAB_I_CLASSIC;
+extern const lab_icon LAB_I_SCRIPTS;
+extern const lab_icon LAB_I_GAMES;
+extern const lab_icon LAB_I_DEBUG;
+extern const lab_icon LAB_I_HELP;
+extern const lab_icon LAB_I_GENERIC;
 extern const lab_icon LAB_I_INFO;
 
 #define LAB_PAL_N 43

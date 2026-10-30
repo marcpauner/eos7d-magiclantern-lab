@@ -55,7 +55,216 @@ static int be_set(const char *menu, const char *entry, int value)
     return r != 0 && r != LAB_MISSING;
 }
 
-static const lab_backend be = {be_get, be_set};
+/* ------------------------------------------------ Magic Lantern menus
+ *
+ * ML's list of menus is private to menu.c, but the structures are public
+ * (menu.h) and menu_add links our own Prefs entry into that list: its
+ * parent_menu and the menus' next/prev pointers reach every menu. The rules
+ * below follow menu.c: is_visible, entry_guess_enabled,
+ * entry_default_display_info and menu_entry_select.
+ */
+
+static struct menu_entry labui_menu[];
+extern int raw2iso(int raw_iso);
+extern void menu_open_submenu();
+
+static struct menu *ml_first(void)
+{
+    struct menu *m = labui_menu[0].parent_menu;
+    if (!m) return 0;
+    while (m->prev) m = m->prev;
+    return m;
+}
+
+static int visible(struct menu *m, struct menu_entry *e)
+{
+    if (MENU_IS_PLACEHOLDER(e) || e->shidden || e->hidden) return 0;
+    return !e->advanced || m->advanced || e->selected;
+}
+
+static int has_children(struct menu_entry *e)
+{
+    return e->children && !MENU_IS_EOL(e->children);
+}
+
+static int be_tabs(void **h, const char **names, int max)
+{
+    struct menu *m;
+    struct menu_entry *e;
+    int n = 0;
+    for (m = ml_first(); m && n < max; m = m->next) {
+        if (IS_SUBMENU(m) || m->no_name_lookup || !m->name) continue;
+        if (!strcmp(m->name, "MyMenu") || !strcmp(m->name, "Modified")) continue;
+        for (e = m->children; e && !visible(m, e); e = e->next) ;
+        if (!e) continue;                          /* nothing to show */
+        h[n] = m;
+        names[n] = m->name;
+        n++;
+    }
+    return n;
+}
+
+static int guess_on(struct menu_entry *e)
+{
+    struct menu_entry *c;
+    switch (e->icon_type) {
+    case IT_BOOL: case IT_DICE_OFF: case IT_PERCENT_OFF: case IT_PERCENT_LOG_OFF:
+        return MENU_INT(e) != 0;
+    case IT_BOOL_NEG:
+        return !MENU_INT(e);
+    case IT_SUBMENU:
+        if (IS_ML_PTR(e->priv)) return MENU_INT(e) != 0;
+        for (c = has_children(e) ? e->children : 0; c; c = c->next)
+            if (MENU_INT(c) && (c->icon_type == IT_BOOL || c->icon_type == IT_DICE_OFF)) return 1;
+        return 0;
+    }
+    return 1;
+}
+
+static void default_value(struct menu_entry *e, char *v, int n)
+{
+    int x, a, den, r, len;
+    v[0] = 0;
+    if (e->choices && SELECTED_INDEX(e) >= 0 && SELECTED_INDEX(e) < NUM_CHOICES(e)) {
+        snprintf(v, n, "%s", e->choices[SELECTED_INDEX(e)]);
+        return;
+    }
+    if (!IS_ML_PTR(e->priv) || e->icon_type == IT_ACTION || e->icon_type == IT_SUBMENU) return;
+    x = MENU_INT(e);
+    if (e->min == 0 && e->max == 1) { snprintf(v, n, "%s", x ? "ON" : "OFF"); return; }
+    switch (e->unit) {
+    case UNIT_1_8_EV: case UNIT_x10: case UNIT_PERCENT_x10:
+        den = e->unit == UNIT_1_8_EV ? 8 : 10;
+        a = x < 0 ? -x : x;
+        r = (a % den) * 10 / den;
+        snprintf(v, n, "%s%d", x < 0 ? "-" : "", a / den);
+        len = strlen(v);
+        if (r) { snprintf(v + len, n - len, ".%d", r); len = strlen(v); }
+        snprintf(v + len, n - len, "%s", e->unit == UNIT_1_8_EV ? " EV" : e->unit == UNIT_PERCENT_x10 ? "%" : "");
+        break;
+    case UNIT_PERCENT: snprintf(v, n, "%d%%", x); break;
+    case UNIT_ISO:     if (x) snprintf(v, n, "%d", raw2iso(x)); else snprintf(v, n, "Auto"); break;
+    case UNIT_HEX:     snprintf(v, n, "0x%x", x); break;
+    case UNIT_TIME:
+        if (x >= 3600) snprintf(v, n, "%dh%02dm%02ds", x / 3600, x / 60 % 60, x % 60);
+        else if (x >= 60) snprintf(v, n, "%dm%02ds", x / 60, x % 60);
+        else snprintf(v, n, "%ds", x);
+        break;
+    case UNIT_TIME_MS: snprintf(v, n, "%d ms", x); break;
+    case UNIT_TIME_US: snprintf(v, n, "%d us", x); break;
+    default:           snprintf(v, n, "%d", x); break;
+    }
+}
+
+/* help strings may hold one line per choice, separated by '\n' */
+static void help_line_of(const char *src, int idx, char *dst, int n)
+{
+    const char *s = src;
+    int i;
+    for (i = 0; i < idx && s; i++) {
+        while (*s && *s != '\n') s++;
+        s = *s ? s + 1 : 0;
+    }
+    if (!s || !*s) s = src;
+    for (i = 0; s[i] && s[i] != '\n' && i < n - 1; i++) dst[i] = s[i];
+    dst[i] = 0;
+}
+
+static void format(struct menu_entry *e, lab_item *it, char *help, int *warn)
+{
+    static char name[MENU_MAX_NAME_LEN], value[MENU_MAX_VALUE_LEN], sname[MENU_MAX_SHORT_NAME_LEN],
+                svalue[MENU_MAX_SHORT_VALUE_LEN], hl[MENU_MAX_HELP_LEN], wn[MENU_MAX_WARNING_LEN],
+                ri[MENU_MAX_RINFO_LEN];
+    struct menu_display_info info;
+    int onoff;
+
+    memset(&info, 0, sizeof(info));
+    name[0] = value[0] = sname[0] = svalue[0] = hl[0] = wn[0] = ri[0] = 0;
+    info.name = name; info.value = value; info.short_name = sname; info.short_value = svalue;
+    info.help = hl; info.warning = wn; info.rinfo = ri;
+    info.can_custom_draw = 0;
+    info.enabled = guess_on(e);
+    snprintf(name, sizeof(name), "%s", e->name);
+    default_value(e, value, sizeof(value));
+    if (e->update) {
+        /* help and warning texts are only filled in for the selected entry */
+        unsigned sel = e->selected;
+        if (help) e->selected = 1;
+        e->update(e, &info);
+        e->selected = sel;
+    }
+
+    snprintf(it->name, sizeof(it->name), "%s", name);
+    snprintf(it->value, sizeof(it->value), "%s", value);
+    onoff = !strcmp(value, "ON") || !strcmp(value, "OFF");
+    if (has_children(e)) {
+        it->kind = LAB_IT_SUBMENU;
+        it->state = IS_ML_PTR(e->priv) && e->icon_type != IT_ACTION ? (onoff ? !strcmp(value, "ON") : info.enabled) : -1;
+        if (onoff && it->state >= 0) it->value[0] = 0;          /* the dot says it */
+    } else if (e->icon_type == IT_ACTION) {
+        it->kind = LAB_IT_ACTION;
+        it->state = -1;
+    } else if ((e->icon_type == IT_BOOL || e->icon_type == IT_BOOL_NEG) && (onoff || !value[0])) {
+        it->kind = LAB_IT_TOGGLE;
+        it->state = onoff ? !strcmp(value, "ON") : info.enabled;
+    } else {
+        it->kind = LAB_IT_VALUE;
+        it->state = -1;
+    }
+    it->dim = info.warning_level == MENU_WARN_NOT_WORKING;
+    it->h = e;
+
+    if (help) {
+        if (wn[0]) { snprintf(help, LAB_HELP_LEN, "%s", wn); *warn = 1; }
+        else if (hl[0]) snprintf(help, LAB_HELP_LEN, "%s", hl);
+        else if (e->help) help_line_of(e->help, e->choices ? SELECTED_INDEX(e) : 0, help, LAB_HELP_LEN);
+    }
+}
+
+static int be_items(void *menu, lab_item *out, int max, int focus, char *help, int *warn)
+{
+    struct menu *m = menu;
+    struct menu_entry *e;
+    int n = 0;
+    for (e = m->children; e && n < max; e = e->next) {
+        if (!visible(m, e)) continue;
+        format(e, &out[n], n == focus ? help : 0, warn);
+        n++;
+    }
+    return n;
+}
+
+static void *be_submenu(void *h)
+{
+    struct menu_entry *e = h;
+    return has_children(e) ? e->children->parent_menu : 0;
+}
+
+static void be_change(void *h, int how)
+{
+    struct menu_entry *e = h;
+    int d = how == LAB_CH_SET ? 1 : how;
+    if ((void *)e->select == (void *)menu_open_submenu) return;   /* would open ML's own submenu */
+    if (e->select) { e->select(e->priv, d); return; }
+    if (!IS_ML_PTR(e->priv) || e->max <= e->min) return;
+    if (e->max - e->min < 50 || e->unit == UNIT_HEX) {
+        menu_numeric_toggle(e->priv, d, e->min, e->max);
+    } else {                        /* long ranges: bigger steps for bigger values */
+        int *p = e->priv, a = *p < 0 ? -*p : *p;
+        int x = *p + d * (a >= 1000 ? 100 : a >= 100 ? 10 : 1);
+        *p = x < e->min ? e->min : x > e->max ? e->max : x;
+    }
+}
+
+static void be_where(void *h, const char **menu, const char **entry)
+{
+    struct menu_entry *e = h;
+    while (e->parent) e = e->parent;
+    *menu = e->parent_menu ? e->parent_menu->name : 0;
+    *entry = e->name;
+}
+
+static const lab_backend be = {be_get, be_set, be_tabs, be_items, be_submenu, be_change, be_where};
 
 /* ----------------------------------------------------------- palette */
 

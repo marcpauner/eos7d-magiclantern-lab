@@ -19,9 +19,10 @@
 #define PAD_X    24                /* text start */
 #define RIGHT    616               /* text end */
 #define ROW_H    40
+#define HELP_Y   422               /* help line on list screens */
 #define LEGEND_Y 450
 
-/* values cached by lab_refresh */
+/* values of the designed screens, read by lab_refresh */
 enum { V_GD, V_ZEBRA, V_ZCS, V_ZHI, V_ZLO, V_FALSE, V_HIST, V_WAVE, V_PEAK,
        V_MZ, V_MZMODE, V_CROP, V_INTERVAL, V_COUNT };
 
@@ -34,31 +35,33 @@ static const ref REFS[V_COUNT] = {
     {"Shoot", "Intervalometer"},
 };
 
-/* ------------------------------------------------------------ screens */
+/* ------------------------------------------------------- root (tabs) */
 
-typedef struct {
-    const char *label;
-    const lab_icon *icon;
-    const char *menu;          /* classic ML menu; 0 = native screen */
-    int section;
-} root_row;
+typedef struct { const char *ml, *label; const lab_icon *icon; int section; } tab_info;
 
-static const root_row ROOT[] = {
-    {"Exposición",      &LAB_I_EXPO,    "Expo",    0},
-    {"Superposiciones", &LAB_I_OVERLAY, 0,         0},
-    {"Enfoque",         &LAB_I_FOCUS,   "Focus",   0},
-    {"Disparo",         &LAB_I_SHOOT,   "Shoot",   0},
-    {"Vídeo",           &LAB_I_VIDEO,   "Movie",   1},
-    {"Audio",           &LAB_I_AUDIO,   "Audio",   1},
-    {"Pantalla",        &LAB_I_DISPLAY, "Display", 1},
-    {"Módulos",         &LAB_I_MODULES, "Modules", 2},
-    {"Preferencias",    &LAB_I_PREFS,   "Prefs",   2},
-    {"Menú clásico",    &LAB_I_CLASSIC, "",        2},
+/* Magic Lantern's top-level menus, in the order and sections of the design.
+ * Menus not listed here (added by modules) go to the end of SISTEMA. */
+static const tab_info TABS[] = {
+    {"Expo",    "Exposición",      &LAB_I_EXPO,    0},
+    {"Overlay", "Superposiciones", &LAB_I_OVERLAY, 0},
+    {"Focus",   "Enfoque",         &LAB_I_FOCUS,   0},
+    {"Shoot",   "Disparo",         &LAB_I_SHOOT,   0},
+    {"Movie",   "Vídeo",           &LAB_I_VIDEO,   1},
+    {"Audio",   "Audio",           &LAB_I_AUDIO,   1},
+    {"Display", "Pantalla",        &LAB_I_DISPLAY, 1},
+    {"Prefs",   "Preferencias",    &LAB_I_PREFS,   2},
+    {"Modules", "Módulos",         &LAB_I_MODULES, 2},
+    {"Scripts", "Scripts",         &LAB_I_SCRIPTS, 2},
+    {"Games",   "Juegos",          &LAB_I_GAMES,   2},
+    {"Debug",   "Depuración",      &LAB_I_DEBUG,   2},
+    {"Help",    "Ayuda",           &LAB_I_HELP,    2},
 };
-#define ROOT_N ((int)(sizeof(ROOT) / sizeof(ROOT[0])))
+#define TABS_N ((int)(sizeof(TABS) / sizeof(TABS[0])))
 static const char *ROOT_SECTIONS[] = {"01 — CAPTURA", "02 — SALIDA", "03 — SISTEMA"};
 
-enum { R_LINK, R_TOGGLE, R_ZOOM };
+/* ---------------------------------------------- designed: overlays */
+
+enum { R_LINK, R_TOGGLE, R_ZOOM, R_ALL };
 typedef struct {
     const char *label, *entry;
     int kind, value, section;
@@ -78,12 +81,14 @@ static const ov_row OV[] = {
     {"Focus peaking",      "Focus Peak",  R_TOGGLE, V_PEAK,  1,
      "Resalta los bordes nítidos en la imagen en directo para enfocar a mano."},
     {"Zoom de enfoque",    "Magic Zoom",  R_ZOOM,   V_MZ,    1,
-     "Ventana ampliada para comprobar el enfoque. ◀▶ cambia cuándo aparece."},
+     "Ventana ampliada para comprobar el enfoque. ◀ ▶ cambia cuándo aparece."},
     {"Marcas de encuadre", "Cropmarks",   R_TOGGLE, V_CROP,  1,
-     "Guías de encuadre superpuestas. Q elige el tipo en el menú clásico."},
+     "Guías de encuadre superpuestas. ◀ ▶ las activa, Q elige el tipo."},
+    {"Todas las opciones", 0,             R_ALL,    -1,      2,
+     "Lista completa de Overlay: imagen fantasma, spotmeter, vectorscopio…"},
 };
 #define OV_N ((int)(sizeof(OV) / sizeof(OV[0])))
-static const char *OV_SECTIONS[] = {"01 — EXPOSICIÓN", "02 — ENFOQUE"};
+static const char *OV_SECTIONS[] = {"01 — EXPOSICIÓN", "02 — ENFOQUE", "03 — MÁS"};
 static const char *GD_HELP = "Muestra u oculta todas las superposiciones (Global Draw).";
 
 #define ZB_N 4                     /* chip, mode, highlights, shadows */
@@ -105,9 +110,53 @@ static char *put_int(char *p, int v)
     return p;
 }
 
+static int str_eq(const char *a, const char *b)
+{
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+static void copy_n(char *dst, const char *src, int n)
+{
+    int i = 0;
+    while (src[i] && i < n - 1) { dst[i] = src[i]; i++; }
+    dst[i] = 0;
+}
+
+/* Upper case for ASCII and Latin-1 letters in UTF-8 (á -> Á is C3 A1 -> C3 81). */
+static void upper(char *dst, const char *src, int n)
+{
+    int i = 0;
+    for (; src[i] && i < n - 1; i++) {
+        unsigned char c = (unsigned char)src[i];
+        unsigned char prev = i ? (unsigned char)src[i - 1] : 0;
+        if (c >= 'a' && c <= 'z') c = (unsigned char)(c - 32);
+        else if (prev == 0xC3 && c >= 0xA0 && c <= 0xBE && c != 0xB7) c = (unsigned char)(c - 0x20);
+        dst[i] = (char)c;
+    }
+    dst[i] = 0;
+}
+
+/* Copy src into dst (n bytes), shortened with "…" to fit maxw display pixels. */
+static void fit(const lab_font *f, const char *src, int maxw, int track, char *dst, int n)
+{
+    int len;
+    copy_n(dst, src, n);
+    if (lab_text_w(f, dst, track) <= maxw) return;
+    len = 0;
+    while (dst[len]) len++;
+    while (len > 0) {
+        len--;
+        while (len > 0 && (dst[len] & 0xC0) == 0x80) len--;   /* UTF-8 boundary */
+        if (len + 4 > n) continue;
+        dst[len] = 0;
+        put_str(dst + len, "…");
+        if (lab_text_w(f, dst, track) <= maxw) return;
+    }
+}
+
 static int on(const lab_state *st, int v) { return st->v[v] != LAB_MISSING && st->v[v] != 0; }
 static int missing(const lab_state *st, int v) { return st->v[v] == LAB_MISSING; }
-
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
 
 static void text_right(lab_band *b, const lab_font *f, int right, int y, const char *s, uint32_t c, int track)
@@ -124,6 +173,43 @@ static void counter2(char *p, int a, int n)
     put_int(p, n);
 }
 
+static const tab_info *tab_of(const char *ml)
+{
+    int i;
+    for (i = 0; ml && i < TABS_N; i++)
+        if (str_eq(TABS[i].ml, ml)) return &TABS[i];
+    return 0;
+}
+
+/* Root rows: n_root tabs, then "Menú clásico" (root_h 0, root_ml 0). */
+static const char *root_label(const lab_state *st, int i)
+{
+    const tab_info *t = tab_of(st->root_ml[i]);
+    return st->root_ml[i] ? (t ? t->label : st->root_ml[i]) : "Menú clásico";
+}
+
+static const lab_icon *root_icon(const lab_state *st, int i)
+{
+    const tab_info *t = tab_of(st->root_ml[i]);
+    return st->root_ml[i] ? (t ? t->icon : &LAB_I_GENERIC) : &LAB_I_CLASSIC;
+}
+
+static int root_section(const lab_state *st, int i)
+{
+    const tab_info *t = tab_of(st->root_ml[i]);
+    return t ? t->section : 2;
+}
+
+static int root_rows(const lab_state *st) { return st->n_root + 1; }
+
+static int root_find(const lab_state *st, const char *ml)
+{
+    int i;
+    for (i = 0; i < st->n_root; i++)
+        if (str_eq(st->root_ml[i], ml)) return i;
+    return -1;
+}
+
 /* ----------------------------------------------------------- refresh */
 
 void lab_init(lab_state *st)
@@ -131,7 +217,7 @@ void lab_init(lab_state *st)
     int i;
     for (i = 0; i < LAB_S_COUNT; i++) { st->focus[i] = 0; st->scroll[i] = 0; }
     st->screen = LAB_S_ROOT;
-    st->focus[LAB_S_ROOT] = 1;            /* Superposiciones: the native screen */
+    st->focus[LAB_S_ROOT] = 1;            /* Superposiciones */
     st->focus[LAB_S_OVERLAY] = 1;
     st->focus[LAB_S_ZEBRAS] = 2;
     st->gd_last = 3;                      /* ML's default: ON, all modes */
@@ -139,6 +225,43 @@ void lab_init(lab_state *st)
     st->classic_entry = 0;
     st->accent = 0xC8F03C;
     for (i = 0; i < V_COUNT; i++) st->v[i] = LAB_MISSING;
+    st->n_root = 0;
+    st->depth = 0;
+    st->menu_from = LAB_S_ROOT;
+    st->n_items = 0;
+    st->help[0] = 0;
+    st->help_warn = 0;
+}
+
+static void refresh_root(lab_state *st, const lab_backend *be)
+{
+    void *h[LAB_TABS_MAX];
+    const char *names[LAB_TABS_MAX];
+    int n = be->tabs(h, names, LAB_TABS_MAX), i, k, m = 0;
+    /* known menus in design order, then the rest in Magic Lantern's order */
+    for (k = 0; k < TABS_N; k++)
+        for (i = 0; i < n; i++)
+            if (names[i] && str_eq(names[i], TABS[k].ml)) {
+                st->root_h[m] = h[i]; st->root_ml[m] = names[i]; m++;
+                names[i] = 0;
+            }
+    for (i = 0; i < n && m < LAB_TABS_MAX; i++)
+        if (names[i]) { st->root_h[m] = h[i]; st->root_ml[m] = names[i]; m++; }
+    st->n_root = m;
+    if (st->focus[LAB_S_ROOT] >= root_rows(st)) st->focus[LAB_S_ROOT] = root_rows(st) - 1;
+}
+
+static void refresh_menu(lab_state *st, const lab_backend *be)
+{
+    int d = st->depth - 1;
+    if (d < 0) return;
+    st->help[0] = 0;
+    st->help_warn = 0;
+    st->n_items = be->items(st->menu[d], st->items, LAB_ITEMS_MAX, st->gfocus[d], st->help, &st->help_warn);
+    if (st->gfocus[d] >= st->n_items) {
+        st->gfocus[d] = st->n_items > 0 ? st->n_items - 1 : 0;
+        st->n_items = be->items(st->menu[d], st->items, LAB_ITEMS_MAX, st->gfocus[d], st->help, &st->help_warn);
+    }
 }
 
 void lab_refresh(lab_state *st, const lab_backend *be)
@@ -146,6 +269,8 @@ void lab_refresh(lab_state *st, const lab_backend *be)
     int i;
     for (i = 0; i < V_COUNT; i++) st->v[i] = be->get(REFS[i].menu, REFS[i].entry);
     if (on(st, V_GD)) st->gd_last = st->v[V_GD];
+    refresh_root(st, be);
+    if (st->screen == LAB_S_MENU) refresh_menu(st, be);
 }
 
 /* -------------------------------------------------------------- keys */
@@ -177,17 +302,31 @@ static int classic(lab_state *st, const char *menu, const char *entry)
     return LAB_A_CLASSIC;
 }
 
+static int open_menu(lab_state *st, void *h, const char *title, int from)
+{
+    if (!h) return LAB_A_NONE;
+    st->depth = 1;
+    st->menu[0] = h;
+    copy_n(st->title[0], title, sizeof(st->title[0]));
+    st->gfocus[0] = 0;
+    st->gscroll[0] = 0;
+    st->menu_from = from;
+    st->screen = LAB_S_MENU;
+    return LAB_A_REDRAW;
+}
+
 static int key_root(lab_state *st, int key)
 {
-    int *f = &st->focus[LAB_S_ROOT];
+    int *f = &st->focus[LAB_S_ROOT], n = root_rows(st);
     switch (key) {
     case LAB_K_UP: case LAB_K_DEC:   if (*f > 0) (*f)--; return LAB_A_REDRAW;
-    case LAB_K_DOWN: case LAB_K_INC: if (*f < ROOT_N - 1) (*f)++; return LAB_A_REDRAW;
+    case LAB_K_DOWN: case LAB_K_INC: if (*f < n - 1) (*f)++; return LAB_A_REDRAW;
     case LAB_K_SET: case LAB_K_RIGHT:
-        if (!ROOT[*f].menu) { st->screen = LAB_S_OVERLAY; return LAB_A_REDRAW; }
-        return classic(st, ROOT[*f].menu[0] ? ROOT[*f].menu : 0, "");
+        if (*f >= st->n_root) return classic(st, 0, 0);          /* Menú clásico */
+        if (str_eq(st->root_ml[*f], "Overlay")) { st->screen = LAB_S_OVERLAY; return LAB_A_REDRAW; }
+        return open_menu(st, st->root_h[*f], root_label(st, *f), LAB_S_ROOT);
     case LAB_K_BACK: return LAB_A_CLOSE;
-    case LAB_K_Q:    return classic(st, 0, 0);
+    case LAB_K_Q:    return classic(st, *f < st->n_root ? st->root_ml[*f] : 0, *f < st->n_root ? "" : 0);
     }
     return LAB_A_NONE;
 }
@@ -200,10 +339,14 @@ static int key_overlay(lab_state *st, const lab_backend *be, int key)
     case LAB_K_UP:   if (*f > 0) (*f)--; return LAB_A_REDRAW;
     case LAB_K_DOWN: if (*f < OV_N) (*f)++; return LAB_A_REDRAW;
     case LAB_K_BACK: st->screen = LAB_S_ROOT; return LAB_A_REDRAW;
-    case LAB_K_Q:    return classic(st, "Overlay", r ? r->entry : "Global Draw");
+    case LAB_K_Q:    return classic(st, "Overlay", r && r->entry ? r->entry : "Global Draw");
     case LAB_K_SET:
         if (!r) toggle(st, be, V_GD);
         else if (r->kind == R_LINK) st->screen = LAB_S_ZEBRAS;
+        else if (r->kind == R_ALL) {
+            int i = root_find(st, "Overlay");
+            return i < 0 ? LAB_A_NONE : open_menu(st, st->root_h[i], "Superposiciones", LAB_S_OVERLAY);
+        }
         else toggle(st, be, r->value);
         return LAB_A_REDRAW;
     case LAB_K_LEFT: case LAB_K_RIGHT: case LAB_K_DEC: case LAB_K_INC: {
@@ -211,7 +354,7 @@ static int key_overlay(lab_state *st, const lab_backend *be, int key)
         if (!r) toggle(st, be, V_GD);
         else if (r->kind == R_TOGGLE) toggle(st, be, r->value);
         else if (r->kind == R_ZOOM) step(st, be, V_MZMODE, d, 1, 4, 1);
-        else if (d > 0) st->screen = LAB_S_ZEBRAS;
+        else if (r->kind == R_LINK && d > 0) st->screen = LAB_S_ZEBRAS;
         return LAB_A_REDRAW;
     }
     }
@@ -245,12 +388,59 @@ static int key_zebras(lab_state *st, const lab_backend *be, int key)
     return LAB_A_REDRAW;
 }
 
+static int key_menu(lab_state *st, const lab_backend *be, int key)
+{
+    int d = st->depth - 1, *f;
+    const lab_item *it;
+    if (d < 0) { st->screen = LAB_S_ROOT; return LAB_A_REDRAW; }
+    f = &st->gfocus[d];
+    it = (*f < st->n_items) ? &st->items[*f] : 0;
+    switch (key) {
+    case LAB_K_UP:   if (*f > 0) (*f)--; return LAB_A_REDRAW;
+    case LAB_K_DOWN: if (*f < st->n_items - 1) (*f)++; return LAB_A_REDRAW;
+    case LAB_K_BACK:
+        if (--st->depth <= 0) { st->depth = 0; st->screen = st->menu_from; }
+        return LAB_A_REDRAW;
+    case LAB_K_Q:
+        if (!it) return classic(st, 0, 0);
+        be->where(it->h, &st->classic_menu, &st->classic_entry);
+        return LAB_A_CLASSIC;
+    case LAB_K_SET:
+        if (!it) return LAB_A_NONE;
+        if (it->kind == LAB_IT_SUBMENU && st->depth < LAB_DEPTH_MAX) {
+            void *sub = be->submenu(it->h);
+            if (sub) {
+                st->menu[st->depth] = sub;
+                copy_n(st->title[st->depth], it->name, sizeof(st->title[0]));
+                st->gfocus[st->depth] = 0;
+                st->gscroll[st->depth] = 0;
+                st->depth++;
+                return LAB_A_REDRAW;
+            }
+        }
+        if (it->kind == LAB_IT_ACTION) {
+            be->where(it->h, &st->classic_menu, &st->classic_entry);
+            return LAB_A_CLASSIC;
+        }
+        be->change(it->h, LAB_CH_SET);
+        return LAB_A_REDRAW;
+    case LAB_K_LEFT: case LAB_K_DEC:
+        if (it && it->kind != LAB_IT_ACTION) be->change(it->h, -1);
+        return LAB_A_REDRAW;
+    case LAB_K_RIGHT: case LAB_K_INC:
+        if (it && it->kind != LAB_IT_ACTION) be->change(it->h, 1);
+        return LAB_A_REDRAW;
+    }
+    return LAB_A_NONE;
+}
+
 int lab_key(lab_state *st, const lab_backend *be, int key)
 {
     switch (st->screen) {
     case LAB_S_ROOT:    return key_root(st, key);
     case LAB_S_OVERLAY: return key_overlay(st, be, key);
     case LAB_S_ZEBRAS:  return key_zebras(st, be, key);
+    case LAB_S_MENU:    return key_menu(st, be, key);
     }
     return LAB_A_NONE;
 }
@@ -287,6 +477,17 @@ static void legend(lab_band *b, const char *const *keys, const char *const *labe
         x += lab_text(b, &LAB_F_MONO11, x, 469, labels[i], C_MUTED, 0) + 14;
     }
     text_right(b, &LAB_F_MONO11, RIGHT, 469, "ML lua_fix · 7D 2.0.3", C_MUTED, 0);
+}
+
+static void help_line(lab_band *b, const char *text, int warn)
+{
+    char buf[LAB_HELP_LEN + 4];
+    if (b->y0 + b->h <= HELP_Y || b->y0 >= LEGEND_Y) return;
+    lab_round(b, 0, HELP_Y, LAB_DW, LEGEND_Y - HELP_Y, 0, C_BG);
+    if (!text || !text[0]) return;
+    lab_icon_draw(b, &LAB_I_INFO, PAD_X, 430, warn ? C_CORAL : C_MUTED);
+    fit(&LAB_F_HELP13, text, RIGHT - PAD_X - 22, 0, buf, sizeof(buf));
+    lab_text(b, &LAB_F_HELP13, PAD_X + 22, 441, buf, warn ? C_CORAL : C_MUTED, 0);
 }
 
 static int section_header(lab_band *b, int y, const char *s, int first)
@@ -336,32 +537,34 @@ static int ensure_visible(int scroll, int top, int bottom, int view_h, int conte
 static void root_value(const lab_state *st, int i, char *buf)
 {
     buf[0] = 0;
-    if (i == 1 && !missing(st, V_GD)) {
+    if (i >= st->n_root) return;
+    if (str_eq(st->root_ml[i], "Overlay") && !missing(st, V_GD)) {
         int n = on(st, V_ZEBRA) + on(st, V_FALSE) + on(st, V_HIST) + on(st, V_WAVE) +
                 on(st, V_PEAK) + on(st, V_MZ) + on(st, V_CROP);
         if (!st->v[V_GD]) put_str(buf, "OCULTAS");
         else if (n == 0) put_str(buf, "NINGUNA");
         else put_str(put_int(buf, n), n == 1 ? " ACTIVA" : " ACTIVAS");
     }
-    if (i == 3 && on(st, V_INTERVAL)) put_str(buf, "INTERVALO");
+    if (str_eq(st->root_ml[i], "Shoot") && on(st, V_INTERVAL)) put_str(buf, "INTERVALO");
 }
 
 static void draw_root(lab_band *b, lab_state *st)
 {
     const int top = 82, bottom = LEGEND_Y;
-    int ys[ROOT_N], y = 0, i, sec = -1, focus = st->focus[LAB_S_ROOT], content;
+    int ys[LAB_TABS_MAX + 1], sec_of[LAB_TABS_MAX + 1], y = 0, i, sec = -1, content;
+    int n = root_rows(st), focus = st->focus[LAB_S_ROOT];
     int sec_top[3] = {0, 0, 0};
     char buf[24], counter[12];
     static const char *crumbs[] = {"EOS 7D", "AJUSTES"};
     static const char *keys[] = {"SET", "MENU", "Q"};
     static const char *labels[] = {"Entrar", "Salir", "Menú clásico"};
 
-    /* layout */
-    for (i = 0; i < ROOT_N; i++) {
-        if (ROOT[i].section != sec) {
-            sec = ROOT[i].section;
+    for (i = 0; i < n; i++) {
+        sec_of[i] = i < st->n_root ? root_section(st, i) : 2;
+        if (sec_of[i] != sec) {
+            sec = sec_of[i];
             sec_top[sec] = y;
-            y += sec == 0 ? 28 : 34;
+            y += y == 0 ? 28 : 34;
         } else y += 1;                               /* separator */
         ys[i] = y;
         y += ROW_H;
@@ -369,34 +572,33 @@ static void draw_root(lab_band *b, lab_state *st)
     content = y + 8;
     {
         int row_top = ys[focus];
-        if (focus == 0 || ROOT[focus].section != ROOT[focus - 1].section)
-            row_top = sec_top[ROOT[focus].section];
+        if (focus == 0 || sec_of[focus] != sec_of[focus - 1]) row_top = sec_top[sec_of[focus]];
         st->scroll[LAB_S_ROOT] = ensure_visible(st->scroll[LAB_S_ROOT], row_top, ys[focus] + ROW_H + 8,
                                                 bottom - top, content);
     }
 
     lab_clear(b, C_BG);
     sec = -1;
-    for (i = 0; i < ROOT_N; i++) {
+    for (i = 0; i < n; i++) {
         int ry = top + ys[i] - st->scroll[LAB_S_ROOT], foc = i == focus, right = RIGHT;
         uint32_t fg = foc ? C_INK : C_TEXT, mu = foc ? C_INK : C_MUTED;
-        if (ROOT[i].section != sec) {
-            sec = ROOT[i].section;
-            section_header(b, top + sec_top[sec] - st->scroll[LAB_S_ROOT], ROOT_SECTIONS[sec], sec == 0);
+        if (sec_of[i] != sec) {
+            sec = sec_of[i];
+            section_header(b, top + sec_top[sec] - st->scroll[LAB_S_ROOT], ROOT_SECTIONS[sec], sec_top[sec] == 0);
         } else if (!foc && i - 1 != focus) {
             lab_round(b, 58, ry - 1, RIGHT - 58, 1, 0, C_CHIP);
         }
         if (ry > bottom || ry + ROW_H < top) continue;
         if (foc) lab_round(b, LIST_X, ry, LIST_W, ROW_H, 6, st->accent);
-        lab_icon_draw(b, ROOT[i].icon, PAD_X, ry + 10, mu);
-        lab_text(b, foc ? &LAB_F_ROW16B : &LAB_F_ROW16, 58, ry + 26, ROOT[i].label, fg, 0);
+        lab_icon_draw(b, root_icon(st, i), PAD_X, ry + 10, mu);
+        lab_text(b, foc ? &LAB_F_ROW16B : &LAB_F_ROW16, 58, ry + 26, root_label(st, i), fg, 0);
         arrow(b, ry, mu, &right);
         root_value(st, i, buf);
         if (buf[0]) text_right(b, foc ? &LAB_F_MONO12B : &LAB_F_MONO12, right, ry + 25, buf, mu, 6);
     }
 
     lab_round(b, 0, 0, LAB_DW, top, 0, C_BG);
-    counter2(counter, focus + 1, ROOT_N);
+    counter2(counter, focus + 1, n);
     header(b, st, crumbs, 2, 1, "Ajustes", counter);
     legend(b, keys, labels, 3);
 }
@@ -415,9 +617,9 @@ static void zebra_value(const lab_state *st, char *buf)
 
 static void draw_overlay(lab_band *b, lab_state *st)
 {
-    const int top = 76, bottom = 422;
+    const int top = 76, bottom = HELP_Y;
     int ys[OV_N], y = 0, i, sec = -1, focus = st->focus[LAB_S_OVERLAY], content;
-    int sec_top[2] = {0, 0};
+    int sec_top[3] = {0, 0, 0};
     char buf[32], counter[12];
     static const char *crumbs[] = {"AJUSTES", "SUPERPOSICIONES"};
     static const char *keys[] = {"SET", "MENU", "Q"};
@@ -446,7 +648,7 @@ static void draw_overlay(lab_band *b, lab_state *st)
         const ov_row *r = &OV[i];
         int ry = top + ys[i] - st->scroll[LAB_S_OVERLAY], foc = focus == i + 1, right = RIGHT;
         uint32_t fg = foc ? C_INK : C_TEXT, mu = foc ? C_INK : C_MUTED;
-        int state = missing(st, r->value) ? -1 : on(st, r->value);
+        int state = r->value < 0 || missing(st, r->value) ? -1 : on(st, r->value);
         if (r->section != sec) {
             sec = r->section;
             section_header(b, top + sec_top[sec] - st->scroll[LAB_S_OVERLAY], OV_SECTIONS[sec], sec == 0);
@@ -456,12 +658,13 @@ static void draw_overlay(lab_band *b, lab_state *st)
         if (ry > bottom || ry + ROW_H < top) continue;
         if (foc) lab_round(b, LIST_X, ry, LIST_W, ROW_H, 6, st->accent);
         lab_text(b, foc ? &LAB_F_ROW16B : &LAB_F_ROW16, PAD_X, ry + 26, r->label, fg, 0);
-        if (r->kind == R_LINK) {
+        if (r->kind == R_ALL) {
+            arrow(b, ry, mu, &right);
+        } else if (r->kind == R_LINK) {
+            const lab_font *vf = foc ? &LAB_F_MONO12B : &LAB_F_MONO12;
             arrow(b, ry, mu, &right);
             zebra_value(st, buf);
-            right -= lab_text(b, foc ? &LAB_F_MONO12B : &LAB_F_MONO12,
-                              right - lab_text_w(foc ? &LAB_F_MONO12B : &LAB_F_MONO12, buf, 6),
-                              ry + 25, buf, mu, 6) + 10;
+            right -= lab_text(b, vf, right - lab_text_w(vf, buf, 6), ry + 25, buf, mu, 6) + 10;
             if (state > 0) lab_disc(b, right - 3, ry + 20, 7, foc ? C_INK : st->accent);
             else lab_ring(b, right - 3, ry + 20, 7, 1, foc ? C_INK : C_DECO);
         } else {
@@ -474,10 +677,7 @@ static void draw_overlay(lab_band *b, lab_state *st)
         }
     }
 
-    /* help line */
-    lab_round(b, 0, bottom, LAB_DW, LEGEND_Y - bottom, 0, C_BG);
-    lab_icon_draw(b, &LAB_I_INFO, PAD_X, 430, C_MUTED);
-    lab_text(b, &LAB_F_HELP13, PAD_X + 22, 441, focus ? OV[focus - 1].help : GD_HELP, C_MUTED, 0);
+    help_line(b, focus ? OV[focus - 1].help : GD_HELP, 0);
 
     /* header with the Global Draw chip */
     lab_round(b, 0, 0, LAB_DW, top, 0, C_BG);
@@ -623,11 +823,99 @@ static void draw_zebras(lab_band *b, lab_state *st)
     legend(b, keys, labels, 3);
 }
 
+/* --- any Magic Lantern menu */
+
+static int crumbs_w(const char *const *c, int n)
+{
+    int w = 0, k;
+    for (k = 0; k < n; k++) w += lab_text_w(&LAB_F_MONO11, c[k], 10) + 24;
+    return w;
+}
+
+static void draw_menu(lab_band *b, lab_state *st)
+{
+    const int top = 76, bottom = HELP_Y;
+    int d = st->depth - 1, focus, i, content, nc = 0, k;
+    char counter[12], crumb_buf[LAB_DEPTH_MAX][40], name[40], value[40], vbuf[40];
+    const char *crumbs[LAB_DEPTH_MAX + 2];
+    static const char *keys[] = {"SET", "◀ ▶", "MENU", "Q"};
+    const char *labels[] = {"Cambiar", "Ajustar", "Atrás", "Clásico"};
+
+    if (d < 0) { lab_clear(b, C_BG); return; }
+    focus = st->gfocus[d];
+    content = st->n_items * (ROW_H + 1) + 8;
+    st->gscroll[d] = ensure_visible(st->gscroll[d], focus * (ROW_H + 1), focus * (ROW_H + 1) + ROW_H + 8,
+                                    bottom - top - 8, content);
+
+    lab_clear(b, C_BG);
+    for (i = 0; i < st->n_items; i++) {
+        const lab_item *it = &st->items[i];
+        int ry = top + 8 + i * (ROW_H + 1) - st->gscroll[d], foc = i == focus, right = RIGHT, left_w;
+        uint32_t fg = foc ? C_INK : (it->dim ? C_MUTED : C_TEXT), mu = foc ? C_INK : C_MUTED;
+        const lab_font *vf = foc ? &LAB_F_MONO12B : &LAB_F_MONO12;
+        if (i > 0 && !foc && i - 1 != focus) lab_round(b, PAD_X, ry - 1, RIGHT - PAD_X, 1, 0, C_CHIP);
+        if (ry > bottom || ry + ROW_H < top) continue;
+        if (foc) lab_round(b, LIST_X, ry, LIST_W, ROW_H, 6, st->accent);
+        if (it->kind == LAB_IT_TOGGLE) {
+            led_chip(b, st, ry, it->state, foc, &right);
+        } else {
+            if (it->kind == LAB_IT_SUBMENU || it->kind == LAB_IT_ACTION) arrow(b, ry, mu, &right);
+            if (it->value[0]) {
+                upper(vbuf, it->value, sizeof(vbuf));
+                fit(vf, vbuf, 260, 6, value, sizeof(value));
+                right -= lab_text(b, vf, right - lab_text_w(vf, value, 6), ry + 25, value, mu, 6) + 10;
+            }
+            if (it->kind == LAB_IT_SUBMENU && it->state >= 0) {
+                if (it->state > 0) lab_disc(b, right - 3, ry + 20, 7, foc ? C_INK : st->accent);
+                else lab_ring(b, right - 3, ry + 20, 7, 1, foc ? C_INK : C_DECO);
+                right -= 10;
+            }
+        }
+        left_w = right - PAD_X - 6;
+        fit(foc ? &LAB_F_ROW16B : &LAB_F_ROW16, it->name, left_w, 0, name, sizeof(name));
+        lab_text(b, foc ? &LAB_F_ROW16B : &LAB_F_ROW16, PAD_X, ry + 26, name, fg, 0);
+    }
+    if (st->n_items == 0)
+        lab_text(b, &LAB_F_HELP13, PAD_X, top + 40, "No hay opciones visibles en este modo.", C_MUTED, 0);
+
+    help_line(b, st->help, st->help_warn);
+
+    /* header: breadcrumb trimmed from the left to fit */
+    lab_round(b, 0, 0, LAB_DW, top, 0, C_BG);
+    crumbs[nc++] = "AJUSTES";
+    for (k = 0; k <= d; k++) {
+        upper(crumb_buf[k], st->title[k], sizeof(crumb_buf[k]));
+        crumbs[nc++] = crumb_buf[k];
+    }
+    if (crumbs_w(crumbs, nc) > 440 && nc > 3) {         /* AJUSTES / … / parent / this */
+        crumbs[1] = "…";
+        crumbs[2] = crumbs[nc - 2];
+        crumbs[3] = crumbs[nc - 1];
+        nc = 4;
+    }
+    if (crumbs_w(crumbs, nc) > 440) {                   /* … / this */
+        crumbs[0] = "…";
+        crumbs[1] = crumbs[nc - 1];
+        nc = 2;
+    }
+    counter2(counter, st->n_items ? focus + 1 : 0, st->n_items);
+    fit(&LAB_F_TITLE28, st->title[d], RIGHT - PAD_X, -7, name, sizeof(name));
+    header(b, st, crumbs, nc, 0, name, counter);
+
+    if (focus < st->n_items) {
+        int kind = st->items[focus].kind;
+        if (kind == LAB_IT_SUBMENU) labels[0] = "Abrir";
+        else if (kind == LAB_IT_ACTION) labels[0] = "Clásico";
+    }
+    legend(b, keys, labels, 4);
+}
+
 void lab_draw(lab_band *b, lab_state *st)
 {
     switch (st->screen) {
     case LAB_S_ROOT:    draw_root(b, st); break;
     case LAB_S_OVERLAY: draw_overlay(b, st); break;
     case LAB_S_ZEBRAS:  draw_zebras(b, st); break;
+    case LAB_S_MENU:    draw_menu(b, st); break;
     }
 }
